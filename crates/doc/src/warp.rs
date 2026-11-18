@@ -436,9 +436,17 @@ impl Warp {
             return self.rest.clone();
         }
         match self.bent() {
-            Some(b) => Arc::new(bend(&self.rest, &b)),
+            Some(b) => Arc::new(bend(&self.rest, &b, true)),
             None => self.rest.clone(),
         }
+    }
+
+    /// Deforms every anchor and handle while preserving the indices of brush channels.
+    pub(crate) fn brush_path(&self) -> Arc<Path> {
+        if self.at_rest() {
+            return self.rest.clone();
+        }
+        self.bent().map_or_else(|| self.rest.clone(), |b| Arc::new(bend(&self.rest, &b, false)))
     }
 
     /// Whether `path` is the outline this warp last gave its shape.
@@ -497,7 +505,7 @@ impl Shape {
 
     /// Sets the shape's warp to `w` and its outline to what `w` bends it into.
     pub fn set_warp(&mut self, mut w: Warp) {
-        let path = w.outline();
+        let path = if self.bitmap_brush.is_some() { w.brush_path() } else { w.outline() };
         w.shown = fingerprint(&path);
         self.path = path;
         self.warp = Some(Arc::new(w));
@@ -525,11 +533,11 @@ fn pieces(len: f32, step: f32) -> usize {
 }
 
 /// `rest` bent through the mesh (see the module docs).
-fn bend(rest: &Path, b: &Bent) -> Path {
+fn bend(rest: &Path, b: &Bent, allow_split: bool) -> Path {
     let g = &b.grid;
     let step = (((g.max.x - g.min.x) / g.nx as f32).min((g.max.y - g.min.y) / g.ny as f32) * 0.5).max(1e-3);
     // Splitting is skipped past the command budget (each anchor still maps through the mesh).
-    let split = rest.cmds.len().saturating_mul(MAX_SPLIT) <= MAX_BENT_CMDS || estimate(rest, g, step) <= MAX_BENT_CMDS;
+    let split = allow_split && (rest.cmds.len().saturating_mul(MAX_SPLIT) <= MAX_BENT_CMDS || estimate(rest, g, step) <= MAX_BENT_CMDS);
     let mut out: Vec<PathCmd> = Vec::with_capacity(rest.cmds.len() * 4);
     let mut ts = Vec::new();
     let mut cur = Vec2::ZERO;
@@ -586,7 +594,7 @@ fn bend(rest: &Path, b: &Bent) -> Path {
             }
             PathCmd::Close => {
                 // The closing edge is a straight line too: split it like one.
-                if cur != start {
+                if allow_split && cur != start {
                     if split {
                         g.crossings(cur, start, &mut ts);
                         for &t in &ts {

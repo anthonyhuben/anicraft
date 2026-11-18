@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// The newest envelope version this build reads (v1 inline paths; v2 shared path table; v3
-/// named scene timelines; v4 mixed armatures, ADR 0098).
-pub const FORMAT_VERSION: u32 = 4;
+/// named scene timelines; v4 mixed armatures; v5 bitmap-tip brushes).
+pub const FORMAT_VERSION: u32 = 5;
+/// First version with bitmap-tip brush definitions and per-anchor channels.
+pub const BITMAP_BRUSH_VERSION: u32 = 5;
 /// The version a document is written as unless it needs a later one: the shared envelope's.
 /// Builds from before ADR 0098 read up to this.
 pub const BASE_VERSION: u32 = craft_anicraft_format::FORMAT_VERSION;
@@ -21,7 +23,13 @@ pub const MIXED_ARMATURES_VERSION: u32 = 4;
 /// that uses nothing new still opens in earlier builds, and one that does is refused by them
 /// with a message naming the version instead of opening with parts missing.
 pub fn version_for(doc: &Document) -> u32 {
-    if doc.has_mixed_armatures() { MIXED_ARMATURES_VERSION } else { BASE_VERSION }
+    if !doc.bitmap_brushes.is_empty() {
+        BITMAP_BRUSH_VERSION
+    } else if doc.has_mixed_armatures() {
+        MIXED_ARMATURES_VERSION
+    } else {
+        BASE_VERSION
+    }
 }
 
 /// The envelope for versions past the shared crate's own: the same fields in the same order,

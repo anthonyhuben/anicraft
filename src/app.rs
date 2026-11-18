@@ -197,6 +197,7 @@ pub struct StageView {
     /// View › Clip Content Outside the Stage (#251): hide artwork on the pasteboard (it is still
     /// there, and still exported only where it is on the stage). Off: it shows, as in Animate.
     pub clip_to_stage: bool,
+    pub draft_brushes: bool,
 }
 
 /// In-progress pointer gesture on the stage.
@@ -707,7 +708,7 @@ impl App {
             remote: None,
             s: session,
             tool: Tool::Select,
-            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None, clip_to_stage: false },
+            view: StageView { zoom: 1.0, pan: egui::Vec2::ZERO, fit: true, fitted: None, clip_to_stage: false, draft_brushes: false },
             stage_cache: stage::Cache::default(),
             drag: Drag::None,
             hint_menu: None,
@@ -2946,6 +2947,7 @@ impl App {
     pub(crate) fn announce(&mut self, id: &str, v: &Value, selected: usize) {
         match id {
             "file.new" | "file.new_sample" | "file.new_from_template" | "file.open" | "file.open_recent" => {
+                self.brush_lib.bitmap_tip = None;
                 // The document is here: the start screen has done its job (ADR 0059).
                 self.start = None;
                 if !id.starts_with("file.new")
@@ -3068,6 +3070,11 @@ impl App {
                 let done = trn!("Exported {path} ({n} frame, {kb} KB).", "Exported {path} ({n} frames, {kb} KB).", n, path = path, kb = kb);
                 let held = if stored < n { format!(" {}", tr!("Frames that repeat the one before are stored once, shown longer.")) } else { String::new() };
                 self.status_ok(format!("{done}{held}"));
+            }
+            "file.import_brush_tip" => {
+                self.brush_lib.bitmap_tip = v["brush"].as_u64().map(anicraft_engine::doc::bitmap_brush::BrushId);
+                self.tool = Tool::PaintBrush;
+                self.status_ok(tr!("Bitmap brush tip imported. {undo} to undo.", undo = self.undo_key()));
             }
             "file.export_lottie" => {
                 let report = v["report"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" {r}")).unwrap_or_default();
@@ -3271,6 +3278,7 @@ impl App {
             "macro.run" => Some((tr_noop!("Run a saved command (a .json file)"), "path", "command.json".to_string())),
             "macro.import" => Some((tr_noop!("Add a saved command (a .json file)"), "path", "command.json".to_string())),
             // A brush set (ADR 0068): your brushes as a small JSON file.
+            "file.import_brush_tip" => Some((tr_noop!("Import a grayscale PNG brush tip"), "path", "tip.png".to_string())),
             "brush.preset_export" => Some((tr_noop!("Export your brushes (a brush set file)"), "path", "brushes.json".to_string())),
             "brush.preset_import" => Some((tr_noop!("Import brushes (a brush set file)"), "path", "brushes.json".to_string())),
             // Filter presets (ADR 0091): yours as a small JSON file.

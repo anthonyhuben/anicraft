@@ -13,10 +13,12 @@ pub mod html;
 pub mod lottie;
 mod lottie_keys;
 pub mod svg;
+pub mod brush;
 pub mod warp;
 
 use anicraft_doc::{BlendMode, ColorTransform, DisplayItem, DisplayList, Document, MaskMode, Paint, Rgba, evaluate};
 use anicraft_geom::{Affine, FillRule, Rect, Vec2};
+use brush::{BrushLayer, CpuStampRenderer, StampRenderer};
 use paint::{Premul, Shader, premultiply};
 use raster::{Coverage, IRect};
 use rayon::prelude::*;
@@ -216,15 +218,17 @@ pub fn render(dl: &DisplayList, view: &View) -> Result<(Pixmap, RenderStats), Re
                 open.push(OpenGroup { id: g, buf: vec![[0.0; 4]; rows.len()], dirty: NO_PIXELS });
             }
             let mask = op.clip.map(|c| band_clips.get(&clips, c, band, w, &mut cov, &mut row));
-            if op.hairline {
-                cov.reset_direct(b);
-                for poly in &op.polys {
-                    cov.add_hairline(poly);
-                }
-            } else {
-                cov.reset(b);
-                for poly in &op.polys {
-                    cov.add_polygon(poly);
+            if op.brush.is_none() {
+                if op.hairline {
+                    cov.reset_direct(b);
+                    for poly in &op.polys {
+                        cov.add_hairline(poly);
+                    }
+                } else {
+                    cov.reset(b);
+                    for poly in &op.polys {
+                        cov.add_polygon(poly);
+                    }
                 }
             }
             match open.last_mut() {
@@ -357,7 +361,22 @@ pub struct Scene {
     pub clips: Vec<ClipLayer>,
     pub groups: Vec<GroupLayer>,
     /// Filtered groups, drawn and filtered before the fills that show them ([`Fill::layer`]).
-    pub layers: Vec<FilterLayer>,
+    pub layers: Vec<SurfaceLayer>,
+}
+
+/// An offscreen surface that is composited with regular scene ordering and clipping.
+pub enum SurfaceLayer {
+    Filtered(Box<FilterLayer>),
+    Brush(BrushLayer),
+}
+
+impl SurfaceLayer {
+    pub fn bounds(&self) -> IRect {
+        match self {
+            Self::Filtered(l) => l.bounds,
+            Self::Brush(l) => l.bounds,
+        }
+    }
 }
 
 /// The display list as a [`Scene`], with the same culling and statistics as [`render`]. Bitmap
@@ -374,7 +393,7 @@ pub fn prepare_scene(dl: &DisplayList, view: &View) -> Result<(Scene, RenderStat
             let mut op = setup.op(Shader::Solid([0.0; 4]));
             op.layer = Some(layers.len() as u32);
             slot.push(op);
-            layers.push(setup.layer);
+            layers.push(SurfaceLayer::Filtered(Box::new(setup.layer)));
         }
     }
     let mut stats = RenderStats { items: dl.items.len(), ..Default::default() };
@@ -395,7 +414,14 @@ pub fn prepare_scene(dl: &DisplayList, view: &View) -> Result<(Scene, RenderStat
         op.bounds = op.bounds.intersect(&clips.bounds(c));
         !op.bounds.is_empty()
     });
-    let fill = |op: Prepared| Fill { polys: op.polys, rule: op.rule, shader: op.shader, bounds: op.bounds, clip: op.clip, group: op.group, layer: op.layer, hairline: op.hairline };
+    let mut fill = |mut op: Prepared| {
+        if let Some(brush) = op.brush.take() {
+            op.layer = Some(layers.len() as u32);
+            op.polys = bounds_quad(brush.bounds);
+            layers.push(SurfaceLayer::Brush(brush));
+        }
+        Fill { polys: op.polys, rule: op.rule, shader: op.shader, bounds: op.bounds, clip: op.clip, group: op.group, layer: op.layer, hairline: op.hairline }
+    };
     let mut fills = Vec::with_capacity(ops.len());
     for op in ops {
         stats.edges += op.polys.iter().map(Vec::len).sum::<usize>();
@@ -404,7 +430,7 @@ pub fn prepare_scene(dl: &DisplayList, view: &View) -> Result<(Scene, RenderStat
     }
     stats.drawn = fills.len();
     let Clips { parents, modes, art, bounds } = clips;
-    let clips = parents.into_iter().zip(modes).zip(art).zip(bounds).map(|(((parent, mode), art), bounds)| ClipLayer { parent, mode, art: art.into_iter().map(fill).collect(), bounds }).collect();
+    let clips = parents.into_iter().zip(modes).zip(art).zip(bounds).map(|(((parent, mode), art), bounds)| ClipLayer { parent, mode, art: art.into_iter().map(&mut fill).collect(), bounds }).collect();
     let groups = group_chains(&dl.groups)
         .into_iter()
         .zip(&dl.groups)
@@ -467,9 +493,8 @@ impl FilterSetup {
     /// The op that composites the layer (a rectangle on whole pixels), painted by `shader`.
     fn op(&self, shader: Shader) -> Prepared {
         let s = self.shown;
-        let (x0, y0, x1, y1) = (s.x0 as f32, s.y0 as f32, s.x1 as f32, s.y1 as f32);
         Prepared {
-            polys: vec![vec![Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]],
+            polys: bounds_quad(s),
             rule: FillRule::NonZero,
             shader,
             bounds: s,
@@ -478,8 +503,14 @@ impl FilterSetup {
             group: Some(self.group),
             layer: None,
             hairline: false,
+            brush: None,
         }
     }
+}
+
+fn bounds_quad(b: IRect) -> Vec<Vec<Vec2>> {
+    let (x0, y0, x1, y1) = (b.x0 as f32, b.y0 as f32, b.x1 as f32, b.y1 as f32);
+    vec![vec![Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]]
 }
 
 /// Where and how a filtered group's items are drawn on their own (the group neutral, clips from
@@ -492,7 +523,7 @@ fn filter_setup(dl: &DisplayList, run: &FilteredRun, view: &View, surface: IRect
     // Where it can draw: its artwork's bounds, grown by how far the filters spread.
     let mut r = Rect::EMPTY;
     for it in items.iter().filter(|i| i.masks.is_none() && !i.guide) {
-        let pad = it.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach) + 1.0;
+        let pad = it.stroke_reach() + 1.0;
         r = r.union(&it.path.bounds().inflate(pad).transformed(&view.transform.mul(&it.transform)));
     }
     if r.is_empty() || !r.min.x.is_finite() || !r.max.y.is_finite() {
@@ -673,6 +704,7 @@ struct Prepared {
     layer: Option<u32>,
     /// A hairline ([`Fill::hairline`]).
     hairline: bool,
+    brush: Option<BrushLayer>,
 }
 
 /// The clips of a display list: their mask artwork and where each can be non-zero.
@@ -745,9 +777,11 @@ impl BandClips {
                 if b.is_empty() {
                     continue;
                 }
-                cov.reset(b);
-                for poly in &op.polys {
-                    cov.add_polygon(poly);
+                if op.brush.is_none() {
+                    cov.reset(b);
+                    for poly in &op.polys {
+                        cov.add_polygon(poly);
+                    }
                 }
                 composite(cov, op, b, band.y0, w, &mut px, row, None);
             }
@@ -815,16 +849,13 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect, soft: bool) -> Vec
         return out;
     }
     // Cull before flattening: control-point bounds are a cheap, conservative superset.
-    let pad = if is_mask { 1.0 } else { item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach) + 1.0 };
+    let pad = if is_mask { 1.0 } else { item.stroke_reach() + 1.0 };
     let bounds = item.path.bounds().inflate(pad).transformed(&m);
     let surface_rect = Rect::new(0.0, 0.0, surface.x1 as f32, surface.y1 as f32);
     if bounds.is_empty() || bounds.intersect(&surface_rect).is_empty() {
         return out;
     }
     let lines = item.path.flatten(&m, TOLERANCE);
-    if lines.is_empty() {
-        return out;
-    }
     let (clip, masks, group) = (item.clip, item.masks, item.group);
     // (Mask artwork is never outlined: it draws nothing of its own.)
     if let Some(color) = item.outline.filter(|_| item.masks.is_none()) {
@@ -846,7 +877,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect, soft: bool) -> Vec
             })
             .collect();
         if let Some(b) = hairline::bounds(&polys, surface) {
-            out.push(Prepared { polys, rule: FillRule::NonZero, shader, bounds: b, clip, masks, group, layer: None, hairline: true });
+            out.push(Prepared { polys, rule: FillRule::NonZero, shader, bounds: b, clip, masks, group, layer: None, hairline: true, brush: None });
         }
         return out;
     }
@@ -855,7 +886,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect, soft: bool) -> Vec
             return;
         }
         if let Some(b) = pixel_bounds(&polys, surface) {
-            out.push(Prepared { polys, rule, shader, bounds: b, clip, masks, group, layer: None, hairline: false });
+            out.push(Prepared { polys, rule, shader, bounds: b, clip, masks, group, layer: None, hairline: false, brush: None });
         }
     };
 
@@ -865,7 +896,7 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect, soft: bool) -> Vec
     }
     // The stroke is outlined from the flattened lines first, so the fill can then take them
     // without a copy; it is still drawn after the fill.
-    let stroke = item.stroke.as_ref().and_then(|st| {
+    let stroke = item.stroke.as_ref().filter(|_| item.bitmap_brush.is_none()).and_then(|st| {
         // Caps, joins, dashes (ADR 0046) and width profiles (ADR 0018); thin strokes and
         // sub-pixel dash patterns fade instead of dropping out.
         let (polys, alpha) = stroke::stroke_geometry(&lines, st, &m, true)?;
@@ -890,6 +921,10 @@ fn prepare(item: &DisplayItem, view: &Affine, surface: IRect, soft: bool) -> Vec
     }
     if let Some((polys, shader)) = stroke {
         push(polys, FillRule::NonZero, shader);
+    }
+    if let Some(brush) = BrushLayer::from_item(item, &m, surface) {
+        out.push(Prepared { polys: Vec::new(), rule: FillRule::NonZero, shader: Shader::Solid([0.0; 4]), bounds: brush.bounds,
+            clip, masks, group, layer: None, hairline: false, brush: Some(brush) });
     }
     out
 }
@@ -916,6 +951,19 @@ fn pixel_bounds(polys: &[Vec<Vec2>], surface: IRect) -> Option<IRect> {
 #[allow(clippy::too_many_arguments)]
 fn composite(cov: &Coverage, op: &Prepared, b: IRect, band_y0: i32, w: usize, rows: &mut [Premul], c: &mut Vec<f32>, mask: Option<&[f32]>) {
     let bw = b.width();
+    if let Some(stroke) = &op.brush {
+        let mut layer = vec![[0.0; 4]; bw * b.height()];
+        let _ = CpuStampRenderer(b).draw(stroke, &mut layer);
+        for (y, src) in (b.y0..b.y1).zip(layer.chunks_exact(bw)) {
+            let start = (y - band_y0) as usize * w + b.x0 as usize;
+            let Some(target) = rows.get_mut(start..start + bw) else { continue };
+            for (i, (dst, &src)) in target.iter_mut().zip(src).enumerate() {
+                let coverage = mask.map_or(1.0, |m| m.get(start + i).copied().unwrap_or(0.0));
+                brush::over(dst, src.map(|v| v * coverage));
+            }
+        }
+        return;
+    }
     c.clear();
     c.resize(bw, 0.0);
     let solid = op.shader.is_solid();
@@ -975,6 +1023,7 @@ mod tests {
             group: None,
             image: None,
             smooth: true,
+            bitmap_brush: None,
             warp: None,
         }
     }
@@ -1230,7 +1279,8 @@ mod tests {
         let (pm, rst) = render(&filtered, &view(16, 16)).unwrap();
         assert_eq!((st.drawn, st.culled), (rst.drawn, rst.culled));
         assert_eq!(scene.layers.len(), 1);
-        let (f, l) = (&scene.fills[0], &scene.layers[0]);
+        let f = &scene.fills[0];
+        let SurfaceLayer::Filtered(l) = &scene.layers[0] else { panic!("expected a filtered layer") };
         assert_eq!((scene.fills.len(), f.layer, f.group, f.bounds), (1, Some(0), Some(0), raster::IRect { x0: 0, y0: 0, x1: 16, y1: 16 }));
         assert_eq!(l.filters, vec![filters::FilterOp::Blur(filters::BoxBlur { nx: 4, ny: 4, passes: 1 })]);
         assert_eq!((l.view.width, l.view.height), (l.bounds.width() as u32, l.bounds.height() as u32));

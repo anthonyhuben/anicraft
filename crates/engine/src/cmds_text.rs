@@ -873,7 +873,7 @@ pub(crate) fn to_shapes(t: &TextBlock) -> Vec<anicraft_doc::Shape> {
     t.fill_paths()
         .into_iter()
         .filter(|(_, _, p)| !p.cmds.is_empty() || t.fills.is_empty())
-        .map(|(color, _, path)| anicraft_doc::Shape { path, fill: Some(anicraft_doc::Paint::Solid(color)), stroke: None, fill_rule: anicraft_geom::FillRule::NonZero, merge: false, warp: None })
+        .map(|(color, _, path)| anicraft_doc::Shape { path, fill: Some(anicraft_doc::Paint::Solid(color)), stroke: None, fill_rule: anicraft_geom::FillRule::NonZero, merge: false, bitmap_brush: None, warp: None })
         .collect()
 }
 

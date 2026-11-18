@@ -470,8 +470,7 @@ impl Path {
                     if cur.points.is_empty() {
                         push_finite(&mut cur.points, last);
                     }
-                    let dd = (last - c1 * 2.0 + c2).length().max((c1 - c2 * 2.0 + p).length());
-                    let n = segments(0.75 * dd, tol);
+                    let n = cubic_steps(&[last, c1, c2, p], tol);
                     for i in 1..=n {
                         let t = i as f32 / n as f32;
                         let mt = 1.0 - t;
@@ -535,6 +534,11 @@ fn push_finite(v: &mut Vec<Vec2>, p: Vec2) {
     if p.is_finite() {
         v.push(p);
     }
+}
+
+pub(crate) fn cubic_steps(c: &[Vec2; 4], tolerance: f32) -> usize {
+    let dd = (c[0] - c[1] * 2.0 + c[2]).length().max((c[1] - c[2] * 2.0 + c[3]).length());
+    segments(0.75 * dd, tolerance)
 }
 
 fn segments(scaled_dd: f32, tol: f32) -> usize {

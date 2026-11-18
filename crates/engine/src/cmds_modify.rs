@@ -41,6 +41,7 @@ pub struct Clipboard {
     /// One entry per layer the selection was on, top to bottom.
     pub layers: Vec<ClipLayer>,
     pub symbols: Vec<Arc<Symbol>>,
+    pub bitmap_brushes: Vec<Arc<anicraft_doc::bitmap_brush::BrushDef>>,
 }
 
 /// One layer's copied artwork.
@@ -115,7 +116,8 @@ fn copy(s: &mut Session, _: &Value) -> Result<Value> {
     let symbols = collect_symbols(s, &all);
     let n = all.len();
     let layers = copied.len();
-    s.clipboard = Clipboard { layers: copied, symbols };
+    let bitmap_brushes = crate::cmds_bitmap_brush::clipboard_brushes(s, &all, &symbols);
+    s.clipboard = Clipboard { layers: copied, symbols, bitmap_brushes };
     Ok(json!({"copied": n, "layers": layers}))
 }
 
@@ -132,6 +134,10 @@ fn clipboard_bounds(s: &Session) -> Rect {
 fn clip_element_bounds(s: &Session, e: &Element) -> Rect {
     // Symbols may come from another document: look them up in the clipboard first.
     let mut doc = s.doc.clone();
+    for brush in &s.clipboard.bitmap_brushes {
+        doc.bitmap_brushes.retain(|b| b.id != brush.id);
+        doc.bitmap_brushes.push(brush.clone());
+    }
     for sym in &s.clipboard.symbols {
         if doc.symbol(sym.id).is_none() {
             doc.library.push(sym.clone());
@@ -206,13 +212,18 @@ fn paste_with(s: &mut Session, offset: Vec2) -> Result<Value> {
     if clipboard_nests(s) {
         return Err(EngineError::State("a symbol can't be pasted inside itself".into()));
     }
-    import_symbols(s, &s.clipboard.symbols.clone());
+    let clip = s.clipboard.clone();
+    let ids = crate::cmds_bitmap_brush::import_clipboard_brushes(s, &clip.bitmap_brushes)?;
+    import_symbols(s, &clip.symbols, &ids);
     let targets = paste_targets(s)?;
-    let copied = s.clipboard.layers.clone();
+    let copied = clip.layers;
     let mut sel = crate::Selection::default();
     let mut all = Vec::new();
     let mut merged = false;
-    for (c, &layer) in copied.iter().zip(&targets) {
+    for (mut c, &layer) in copied.into_iter().zip(&targets) {
+        for el in &mut c.elements {
+            crate::cmds_bitmap_brush::remap_element(el, &ids, 0);
+        }
         let (fresh, m) = s.with_layer(layer, |s| paste_layer(s, &c.elements, offset))?;
         merged |= m;
         all.extend(fresh.iter().map(|e| e.0));
@@ -270,10 +281,13 @@ pub(crate) fn paste_layer(s: &mut Session, elements: &[Element], offset: Vec2) -
 
 /// Adds the symbols this document lacks (from a clipboard, maybe another document's) and
 /// moves the id counter past every id they use, so new ids stay unique.
-pub(crate) fn import_symbols(s: &mut Session, symbols: &[Arc<Symbol>]) {
+pub(crate) fn import_symbols(s: &mut Session, symbols: &[Arc<Symbol>], brushes: &crate::cmds_bitmap_brush::BrushRemap) {
     let mut max_id = 0u64;
-    for sym in symbols.iter().cloned() {
+    for mut sym in symbols.iter().cloned() {
         if s.doc.symbol(sym.id).is_none() {
+            if !brushes.is_empty() {
+                crate::cmds_bitmap_brush::remap_timeline(&mut Arc::make_mut(&mut sym).timeline, brushes, 0);
+            }
             max_id = max_id.max(sym.id.0);
             for l in &sym.timeline.layers {
                 max_id = max_id.max(l.id.0);

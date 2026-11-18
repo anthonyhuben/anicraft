@@ -1,6 +1,6 @@
 # Command reference
 
-Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 364 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**Help › Keyboard Shortcuts**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
+Everything you can do in AniCraft is a command: the menus, the shortcuts, the command palette (**Ctrl+K**, macOS **⌘K**), `anicraft-cli` and AI assistants over MCP all run the same 368 commands, listed here by menu. The id is what scripts and [working headless](../working-headless.md) use; the parameters are what a command takes as JSON. Commands that change the document are one undo step each. Your own shortcuts (**Help › Keyboard Shortcuts**) replace the defaults shown here; see the [shortcut reference](shortcuts.md).
 
 This page is generated from the command registry, so it always matches the version of AniCraft it came with.
 
@@ -615,6 +615,14 @@ These commands have no menu item: the panels, the stage and the timeline use the
   Parameters: `{path, names? (default: all yours)} writes your brushes to a brush set file (JSON)`
 - **Import Brushes** `brush.preset_import`
   Parameters: `{path} adds the brushes in a brush set file to yours (a name you have already gets a number)`
+- **Import Bitmap Brush Tip…** `file.import_brush_tip` · changes the document
+  Parameters: `{path (grayscale PNG up to 256×256), settings? (BrushDef fields, including name)}`
+- **Add Bitmap Brush** `brush.bitmap_add` · changes the document
+  Parameters: `{definition: BrushDef (1–32 R8 tips)}`
+- **Draw Bitmap Brush Stroke** `draw.bitmap_brush` · changes the document
+  Parameters: `{brush, anchors?: [StrokePoint (absolute coordinates), …], points?: pointer samples as in draw.brush; closed?, color?, seed?, size?, curve?, pressure_size?, pressure_opacity?, smoothing?, unit?}`
+- **Edit Bitmap Brush Point** `stroke.bitmap_channels` · changes the document
+  Parameters: `{element, point (zero-based anchor index), layer?, width?, opacity?, drift?, color?} edits the current keyframe. Classic tweens interpolate matching brush anchors.`
 - **Move Filter** `filter.move` · changes the document
   Parameters: ``{from, to} moves the filter at index `from` (0 is the first, applied first) to index `to` in the lists of the selected movie clips, buttons and text; the order changes how they draw``
 - **Enable Filter** `filter.enable` · changes the document

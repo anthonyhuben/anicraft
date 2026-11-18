@@ -245,6 +245,9 @@ fn element_bytes(e: &Element, shared_paths: &HashSet<usize>) -> usize {
         if !shared_paths.contains(&ptr(&s.path)) {
             b += path_bytes(e);
         }
+        if let Some(stroke) = &s.bitmap_brush {
+            b += size_of::<anicraft_doc::bitmap_brush::BrushStroke>() + stroke.points.len() * size_of::<anicraft_doc::bitmap_brush::PointAttributes>();
+        }
         if let Some(anicraft_doc::Paint::Linear { stops, .. } | anicraft_doc::Paint::Radial { stops, .. }) = &s.fill {
             b += stops.len() * size_of::<anicraft_doc::GradientStop>();
         }
@@ -321,6 +324,12 @@ fn symbol_bytes(s: &Symbol, other: Option<&Symbol>) -> usize {
 pub fn unique_bytes(old: &Document, new: &Document) -> usize {
     let layers = |d: &Document| d.scenes.iter().map(|s| s.timeline.layers.len()).sum::<usize>();
     let mut b = size_of::<Snapshot>() + (old.scenes.len() + layers(old) + old.library.len()) * size_of::<usize>();
+    for brush in &old.bitmap_brushes {
+        if !new.bitmap_brushes.iter().any(|b| Arc::ptr_eq(b, brush)) {
+            b += size_of::<anicraft_doc::bitmap_brush::BrushDef>() + brush.name.len()
+                + brush.tips.iter().map(|tip| tip.mask().len() + size_of::<anicraft_doc::bitmap_brush::TipImage>()).sum::<usize>();
+        }
+    }
     let shared_layers: HashSet<usize> = new.scenes.iter().flat_map(|s| s.timeline.layers.iter().map(ptr)).collect();
     for l in old.scenes.iter().flat_map(|s| s.timeline.layers.iter()) {
         if !shared_layers.contains(&ptr(l)) {
@@ -340,6 +349,6 @@ pub fn unique_bytes(old: &Document, new: &Document) -> usize {
 
 /// Estimated total bytes of a document (as if nothing were shared). Used for reporting.
 pub fn document_bytes(doc: &Document) -> usize {
-    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: doc.aids.clone(), swatches: doc.swatches.clone(), eases: doc.eases.clone(), next_id: doc.next_id };
+    let empty = Document { stage: doc.stage, scenes: Vec::new(), library: Vec::new(), bitmaps: Vec::new(), bitmap_brushes: Vec::new(), sounds: Vec::new(), library_tree: Default::default(), document_class: String::new(), publish: Default::default(), aids: doc.aids.clone(), swatches: doc.swatches.clone(), eases: doc.eases.clone(), next_id: doc.next_id };
     unique_bytes(doc, &empty)
 }

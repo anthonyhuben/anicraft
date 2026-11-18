@@ -568,6 +568,7 @@ mod tests {
             group: None,
             image: None,
             smooth: true,
+            bitmap_brush: None,
             warp: None,
         }
     }
@@ -757,6 +758,7 @@ mod group_tests {
             group: g,
             image: None,
             smooth: true,
+            bitmap_brush: None,
             warp: None,
         };
         let dl = DisplayList { links: Vec::new(), clip_modes: Vec::new(), items: vec![it(None), it(Some(0)), it(Some(1)), it(Some(0)), it(None)], clip_parents: vec![], groups: vec![Group { parent: None, alpha: 0.5, blend: Default::default(), filters: Default::default(), clip: None }, Group { parent: Some(0), alpha: 0.25, blend: Default::default(), filters: Default::default(), clip: None }] };

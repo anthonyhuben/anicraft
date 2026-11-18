@@ -32,6 +32,7 @@ fn item(path: Path, fill: Paint) -> DisplayItem {
         group: None,
         image: None,
         smooth: true,
+        bitmap_brush: None,
         warp: None,
     }
 }
@@ -1144,7 +1145,7 @@ fn filtered_sample() -> anicraft_doc::Document {
             }
         }
     }
-    let shape = anicraft_doc::Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), merge: false, fill: Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(77), repeat: true, matrix: Affine::scale(5.0, 5.0) }), stroke: None, fill_rule: FillRule::NonZero, warp: None };
+    let shape = anicraft_doc::Shape { path: Arc::new(Path::rect(0.0, 0.0, 1280.0, 300.0)), merge: false, fill: Some(Paint::Bitmap { bitmap: anicraft_doc::BitmapId(77), repeat: true, matrix: Affine::scale(5.0, 5.0) }), stroke: None, fill_rule: FillRule::NonZero, bitmap_brush: None, warp: None };
     let sky = anicraft_doc::Element { id: ElementId(9_100), name: "sky".into(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Shape(shape) };
     let frames = doc.frame_count();
     let mut k = anicraft_doc::Keyframe::new(0, frames);
@@ -1314,5 +1315,45 @@ fn gpu_binned_frames_match_the_oracle() {
         assert_eq!(f.gpu_binned, !uses(&dl), "{name}: binned on the GPU {}", f.gpu_binned);
         let (oracle, _) = render(&dl, &v).unwrap();
         assert!(compare_premul8(&f.premul8, &oracle.to_premul_rgba8()).unwrap().max <= 2, "{name}");
+    }
+}
+
+#[test]
+fn bitmap_brush_shader_validates() {
+    let source = include_str!("brush.wgsl");
+    let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
+}
+
+#[test]
+fn bitmap_brush_matches_the_oracle_for_both_blends_and_a_soft_mask() {
+    use anicraft_doc::bitmap_brush::{BrushDef, EvaluatedBrush, PointAttributes, StampBlend, Stroke, StrokePoint, TipImage};
+    let Some(g) = gpu() else { return };
+    let v = view(56, 40, None);
+    let stroke = Stroke {
+        points: vec![
+            StrokePoint::at(Vec2::new(9.25, 20.25), PointAttributes { width: 14.0, opacity: 0.6, drift: 1.0 }),
+            StrokePoint::at(Vec2::new(46.25, 20.25), PointAttributes { width: 14.0, opacity: 0.6, drift: 1.0 }),
+        ],
+        closed: false, brush: Default::default(), color: Rgba::hex(0x6e4530), seed: 13,
+    };
+    for blend in [StampBlend::Accumulate, StampBlend::MaxPerStroke] {
+        let make = || {
+            let mut it = item(stroke.path(), Paint::Solid(Rgba::BLACK));
+            it.fill = None;
+            it.bitmap_brush = Some(EvaluatedBrush {
+                style: Arc::new(stroke.style()),
+                definition: Arc::new(BrushDef { tips: vec![TipImage::new(16, 16, vec![200; 256]).unwrap()], flow: 0.6, blend, ..Default::default() }),
+            });
+            it
+        };
+        let mut dl = list(vec![make()]);
+        assert_parity(g, "bitmap brush", &dl, &v);
+        let mut mask = make();
+        mask.masks = Some(0);
+        dl.items = vec![mask, clipped(item(Path::rect(0.0, 0.0, 56.0, 40.0), Paint::Solid(Rgba::WHITE)), 0)];
+        dl.clip_parents.push(None);
+        dl.set_clip_mode(0, MaskMode::Alpha);
+        assert_parity(g, "bitmap brush mask", &dl, &v);
     }
 }

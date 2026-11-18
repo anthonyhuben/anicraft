@@ -293,6 +293,11 @@ pub fn commit(app: &mut App, xf: Xf) {
     params["unit"] = json!(xf.unit());
     params["as_stroke"] = json!(as_stroke);
     if as_stroke {
+        if let Some(id) = app.brush_lib.bitmap_tip.filter(|id| app.s.doc.bitmap_brush(*id).is_some()) {
+            params["brush"] = json!(id.0);
+            app.draw("draw.bitmap_brush", params);
+            return;
+        }
         if let Some(v) = app.draw("draw.brush", params)
             && v["width_points"].as_u64().is_some_and(|n| n > 1)
         {

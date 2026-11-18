@@ -44,6 +44,15 @@ impl CurveWalk {
     /// `None` for a path without a segment of some length, or with non-finite points. A `Close`
     /// that draws an edge back to the start walks that edge too.
     pub fn new(path: &Path) -> Option<CurveWalk> {
+        Self::measure(path, None)
+    }
+
+    /// Measures with adaptive Bézier flattening in path units, bounded to 128 samples per cubic.
+    pub fn adaptive(path: &Path, tolerance: f32) -> Option<CurveWalk> {
+        Self::measure(path, Some(if tolerance.is_finite() { tolerance.clamp(0.0001, 1.0) } else { 0.01 }))
+    }
+
+    fn measure(path: &Path, adaptive: Option<f32>) -> Option<CurveWalk> {
         let mut segs: Vec<(usize, [Vec2; 4])> = Vec::new();
         let (mut cur, mut start, mut begun) = (Vec2::ZERO, Vec2::ZERO, false);
         for (i, c) in path.cmds.iter().enumerate() {
@@ -60,7 +69,7 @@ impl CurveWalk {
                 PathCmd::QuadTo(q, p) => [cur, cur + (q - cur) * (2.0 / 3.0), p + (q - p) * (2.0 / 3.0), p],
                 PathCmd::CubicTo(c1, c2, p) => [cur, c1, c2, p],
                 PathCmd::Close => {
-                    if cur.distance(start) > 1e-6 {
+                    if cur.distance(start) > adaptive.map_or(1e-6, |_| 0.0) {
                         segs.push((i, [cur, cur.lerp(start, 1.0 / 3.0), cur.lerp(start, 2.0 / 3.0), start]));
                     }
                     break;
@@ -79,17 +88,23 @@ impl CurveWalk {
             // About one sample per two units of the control polygon: dense enough that the
             // chord and the arc agree to well under a thousandth.
             let poly = c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]);
-            let n = (poly / 2.0).ceil().clamp(8.0, 256.0) as u32;
+            let n = adaptive.map_or_else(|| (poly / 2.0).ceil().clamp(8.0, 256.0) as usize, |tol| {
+                let steps = crate::path::cubic_steps(c, tol);
+                if steps == 1 { 1 } else { steps.clamp(8, 128) }
+            });
             let mut prev = c[0];
             for j in 1..=n {
                 let t = j as f32 / n as f32;
                 let p = cubic_point(c, t);
-                d += prev.distance(p);
+                let end = d + prev.distance(p);
                 prev = p;
-                samples.push(Sample { s: d, seg: k as u32, t, p });
+                if adaptive.is_none() || end > d {
+                    samples.push(Sample { s: end, seg: k as u32, t, p });
+                }
+                d = end;
             }
         }
-        (d.is_finite() && d > 1e-3).then_some(CurveWalk { segs, samples })
+        (d.is_finite() && d > adaptive.map_or(1e-3, |_| 0.0)).then_some(CurveWalk { segs, samples })
     }
 
     pub fn length(&self) -> f32 {
@@ -148,6 +163,24 @@ impl CurveWalk {
         }
         let d = c[3] - c[0];
         if d.length() > 1e-6 { d.normalized() } else { Vec2::new(1.0, 0.0) }
+    }
+
+    /// Position, incoming tangent at a cusp, path command index, and segment parameter.
+    /// One binary search supplies the geometry and attribute sampling for a brush stamp.
+    pub fn sample(&self, s: f32) -> (Vec2, Vec2, usize, f32) {
+        let (k, t) = self.find(s);
+        let Some((cmd, c)) = self.segs.get(k) else { return (Vec2::ZERO, Vec2::new(1.0, 0.0), 0, 0.0) };
+        let p = cubic_point(c, t);
+        let d = cubic_deriv(c, t);
+        let direction = if d.length() > 1e-6 {
+            d
+        } else if t > 0.0 {
+            p - cubic_point(c, (t - 0.001).max(0.0))
+        } else {
+            cubic_point(c, 0.001) - p
+        };
+        let tangent = if direction.length() > 0.0 { direction.normalized() } else { Vec2::new(1.0, 0.0) };
+        (p, tangent, *cmd, t)
     }
 
     /// The distance along the path of the point nearest to `p`.
