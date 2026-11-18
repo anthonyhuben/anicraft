@@ -41,6 +41,7 @@ fn item(shape: &Shape, transform: Affine, smooth: bool) -> DisplayItem {
         group: None,
         image: Some(image()),
         smooth,
+        bitmap_brush: None,
         warp: shape.live_warp().filter(|w| !w.at_rest()).and_then(Warp::mesh).map(Arc::new),
     }
 }

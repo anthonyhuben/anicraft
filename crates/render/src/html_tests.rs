@@ -493,7 +493,7 @@ fn frames_are_baked_and_stored_once() {
 fn variable_width_strokes_become_filled_outlines() {
     use anicraft_doc::{ProfilePreset, Stroke};
     let mut doc = Document::default();
-    let shape = Shape { path: Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(Stroke::new(Rgba::hex(0x00ff00), 10.0).with_profile(ProfilePreset::TaperEnd.profile())), fill_rule: FillRule::NonZero, merge: false, warp: None };
+    let shape = Shape { path: Arc::new(Path::line(Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0))), fill: None, stroke: Some(Stroke::new(Rgba::hex(0x00ff00), 10.0).with_profile(ProfilePreset::TaperEnd.profile())), fill_rule: FillRule::NonZero, merge: false, bitmap_brush: None, warp: None };
     let el = Element { id: ElementId(77), name: String::new(), transform: Affine::translate(5.0, 0.0), color: Default::default(), kind: ElementKind::Shape(shape) };
     Arc::make_mut(&mut doc.timeline_mut(0).layers[0]).keyframe_mut(0).unwrap().elements.push(Arc::new(el));
     let m = movie(&doc, &HtmlOptions::default());
@@ -508,7 +508,7 @@ fn stroke_caps_joins_and_dashes_reach_the_page() {
     use anicraft_doc::{Cap, Dash, Join, Stroke, StrokeStyle};
     let mut doc = Document::default();
     let style = StrokeStyle { cap: Cap::Butt, join: Join::Miter, miter_limit: 6.0, dash: Some(Dash::Dashed { lengths: vec![4.0, 1.5].into(), offset: 1.0 }) };
-    let line = |y: f32, st: Stroke| Shape { path: Arc::new(Path::line(Vec2::new(10.0, y), Vec2::new(200.0, y))), fill: None, stroke: Some(st), fill_rule: FillRule::NonZero, merge: false, warp: None };
+    let line = |y: f32, st: Stroke| Shape { path: Arc::new(Path::line(Vec2::new(10.0, y), Vec2::new(200.0, y))), fill: None, stroke: Some(st), fill_rule: FillRule::NonZero, merge: false, bitmap_brush: None, warp: None };
     let shapes = [line(10.0, Stroke::new(Rgba::BLACK, 3.0)), line(30.0, Stroke::new(Rgba::BLACK, 3.0).with_style(style)), line(50.0, Stroke::new(Rgba::BLACK, 3.0).with_style(StrokeStyle { dash: Dash::dotted(2.0), ..StrokeStyle::default() }))];
     for (i, sh) in shapes.into_iter().enumerate() {
         let el = Element { id: ElementId(70 + i as u64), name: String::new(), transform: Affine::scale(2.0, 2.0), color: Default::default(), kind: ElementKind::Shape(sh) };
@@ -1166,7 +1166,7 @@ fn the_pages_filters_give_the_renderers_pixels() {
         for scale in [1.0f32, if n % 2 == 0 { 1.5 } else { 2.0 }] {
             let view = crate::View { transform: Affine::scale(scale, scale), width: (64.0 * scale) as u32, height: (56.0 * scale) as u32, background: None };
             let (scene, _) = crate::prepare_scene(&dl, &view).unwrap();
-            let [l] = scene.layers.as_slice() else { panic!("case {n}: one filtered layer") };
+            let [crate::SurfaceLayer::Filtered(l)] = scene.layers.as_slice() else { panic!("case {n}: one filtered layer") };
             let (pm, _) = crate::render(&l.list, &l.view).unwrap();
             let (_, page, oracle) = page_and_oracle_filtered(&mut js, l, &pm.data, &dl.groups[0].filters, &exported, scale);
             for (i, (p, o)) in page.iter().zip(&oracle).enumerate() {
@@ -1245,7 +1245,7 @@ fn filters_and_soft_masks_compose_in_the_page_as_in_the_renderer() {
                 let view = crate::View { transform: Affine::scale(scale, scale), width: sw as u32, height: sh as u32, background: Some(Rgba::WHITE) };
                 let (frame, _) = crate::render(&dl, &view).unwrap();
                 let (scene, _) = crate::prepare_scene(&dl, &view).unwrap();
-                let [l] = scene.layers.as_slice() else { panic!("{when}: one filtered layer") };
+                let [crate::SurfaceLayer::Filtered(l)] = scene.layers.as_slice() else { panic!("{when}: one filtered layer") };
                 let (pm, _) = crate::render(&l.list, &l.view).unwrap();
                 let ((x0, y0, bw, bh), page, _) = page_and_oracle_filtered(&mut js, l, &pm.data, &filters, &exported, scale);
                 // A mask over the symbol: its artwork drawn as it looks on its own, read as the

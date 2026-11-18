@@ -42,6 +42,7 @@ pub struct FrameJob {
     /// Seen through the scene's camera (View › Preview Through Camera, ADR 0027): what the
     /// movie shows, rather than the stage as edited.
     pub camera: bool,
+    draft_brushes: bool,
     /// A symbol open in place, in front of the picture (ADR 0045): onion skin composes its own
     /// frames (ADR 0051). Set with [`FrameJob::inside`].
     pub front: Option<Arc<Front>>,
@@ -82,14 +83,41 @@ impl FrameJob {
         self
     }
 
+    /// Shows bitmap brushes as vector outlines in this viewport job.
+    pub fn draft_brushes(mut self, on: bool) -> Self {
+        if on && !self.draft_brushes {
+            let mix = |k| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (k, "draft brushes").hash(&mut h);
+                h.finish()
+            };
+            self.key = mix(self.key);
+            self.scene = mix(self.scene);
+            self.draft_brushes = true;
+        }
+        self
+    }
+
     /// What the job draws: its frame with what its onion settings add (ADR 0047), on the open
     /// symbol's own timeline when there is one (ADR 0051).
     pub fn display_list(&self) -> DisplayList {
         let onion = self.onion.as_ref().filter(|o| o.shows());
-        match (&self.front, onion) {
+        let mut list = match (&self.front, onion) {
             (Some(front), Some(skin)) => display_list_inside(&self.doc, self.frame, front, skin),
             _ => display_list_for(&self.doc, self.frame, self.onion.as_ref(), self.camera),
+        };
+        if self.draft_brushes {
+            for item in &mut list.items {
+                if item.bitmap_brush.take().is_some()
+                    && let [anicraft_geom::PathCmd::MoveTo(p)] = item.path.cmds.as_slice()
+                    && let Some(stroke) = item.stroke.take()
+                {
+                    item.path = Arc::new(anicraft_geom::Path::ellipse(p.x, p.y, stroke.width * 0.5, stroke.width * 0.5));
+                    item.fill = Some(anicraft_doc::Paint::Solid(stroke.color));
+                }
+            }
         }
+        list
     }
 }
 
@@ -207,7 +235,7 @@ pub fn frame_key(state: StateId, frame: u32, view: &View, onion: Option<&OnionSk
 /// A job whose `scene` is derived from the same inputs as its key.
 pub fn make_job(state: StateId, doc: &Document, frame: u32, view: View, onion: Option<&OnionSkin>) -> FrameJob {
     let onion = onion.filter(|o| o.shows()).copied();
-    FrameJob { key: frame_key(state, frame, &view, onion.as_ref()), raster: 0, scene: scene_key(state, frame, onion.as_ref()), doc: doc.clone(), frame, view, onion, camera: false, front: None }
+    FrameJob { key: frame_key(state, frame, &view, onion.as_ref()), raster: 0, scene: scene_key(state, frame, onion.as_ref()), doc: doc.clone(), frame, view, onion, camera: false, draft_brushes: false, front: None }
 }
 
 /// A job for rasterizer `raster` (from [`RenderService::raster_id`]; 0 is the CPU oracle, and

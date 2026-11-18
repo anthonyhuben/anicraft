@@ -282,7 +282,7 @@ pub fn bin_with(scene: &Scene, width: u32, height: u32, gpu: Option<&crate::gpu_
         let (Some(slot), Some(layer)) = (layer_at.get_mut(l as usize), scene.layers.get(l as usize)) else { continue };
         if slot.is_none() {
             *slot = Some(cursor as u32);
-            cursor += layer.bounds.width() * layer.bounds.height();
+            cursor += layer.bounds().width() * layer.bounds().height();
         }
     }
     if cursor >= u32::MAX as usize {
@@ -298,7 +298,7 @@ pub fn bin_with(scene: &Scene, width: u32, height: u32, gpu: Option<&crate::gpu_
             FillRule::EvenOdd => 1,
         };
         let ramp = ramps_at + ramps.len() as u32;
-        let layer = f.layer.and_then(|l| Some((layer_at.get(l as usize).copied().flatten()?, scene.layers.get(l as usize)?.bounds)));
+        let layer = f.layer.and_then(|l| Some((layer_at.get(l as usize).copied().flatten()?, scene.layers.get(l as usize)?.bounds())));
         let (kind, rec) = match (&f.shader, layer) {
             // A layer's pixels at `at`, `w × h`, its top-left at (x0, y0) in surface pixels.
             (_, Some((at, b))) => (IMAGE, [[u(at), u(b.width() as u32), u(b.height() as u32), 0.0], [u(b.x0 as u32), u(b.y0 as u32), 0.0, 0.0], [0.0; 4], [0.0; 4]]),

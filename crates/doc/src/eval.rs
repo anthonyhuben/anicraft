@@ -48,6 +48,16 @@ pub struct DisplayItem {
     /// image as drawn (`rest`) to where it shows (`shown`); renderers draw the image through
     /// its triangles. `None` for everything else (a warped shape's path is already bent).
     pub warp: Option<Arc<crate::warp::WarpMesh>>,
+    /// Brush style and tip definition, resolved against the evaluated centerline.
+    pub bitmap_brush: Option<crate::bitmap_brush::EvaluatedBrush>,
+}
+
+impl DisplayItem {
+    /// Conservative local reach of an outline or bitmap brush beyond its path.
+    pub fn stroke_reach(&self) -> f32 {
+        let line = self.stroke.as_ref().map_or(0.0, Stroke::reach);
+        line.max(self.bitmap_brush.as_ref().map_or(0.0, |b| b.style.reach(&b.definition)))
+    }
 }
 
 /// Back-to-front list of shapes.
@@ -472,10 +482,10 @@ fn interpolate(a: &Element, b: &Element, pr: Progress, morph: bool, hints: &[(an
                 _ => None,
             };
             let path = if let Some(w) = &warp {
-                w.outline()
+                if sa.bitmap_brush.is_some() { w.brush_path() } else { w.outline() }
             } else if Arc::ptr_eq(&sa.path, &sb.path) && hints.is_empty() {
                 sa.path.clone()
-            } else if morph {
+            } else if morph && sa.bitmap_brush.is_none() {
                 anicraft_geom::morph::morph_hinted(&sa.path, &sb.path, hints, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
             } else {
                 sa.path.lerp(&sb.path, t).map(Arc::new).unwrap_or_else(|| sa.path.clone())
@@ -496,7 +506,10 @@ fn interpolate(a: &Element, b: &Element, pr: Progress, morph: bool, hints: &[(an
                 // Not tweening the pins: the shape keeps its warp only while it shows it.
                 None => sa.warp.clone().filter(|w| w.shows(&path)),
             };
-            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge, warp })
+            let bitmap_brush = sa.bitmap_brush.as_ref().map(|a| {
+                sb.bitmap_brush.as_ref().and_then(|b| a.tween(b, t)).map_or_else(|| a.clone(), Arc::new)
+            });
+            ElementKind::Shape(Shape { path, fill, stroke, fill_rule: sa.fill_rule, merge: sa.merge, warp, bitmap_brush })
         }
         // An instance tweens its filters: pairwise when both keyframes have the same kinds in
         // the same order, else as Animate pairs them, a filter without a partner fading in or
@@ -741,13 +754,19 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
         ElementKind::Shape(s) => {
             // Inside a 9-slice instance, the shape's outline is cut and mapped (bitmap
             // fills scale normally, as in Animate).
-            let sliced = cx.slice.filter(|_| !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
+            let sliced = cx.slice.filter(|_| s.bitmap_brush.is_none() && !matches!(s.fill, Some(Paint::Bitmap { .. }))).map(|sl| sliced_shape(s, &el.transform, &sl));
             let is_sliced = sliced.is_some();
-            let (path, transform, fill, stroke) = match sliced {
+            let (path, transform, fill, mut stroke) = match sliced {
                 Some(x) => x,
                 None => (s.path.clone(), xf, s.fill.clone(), s.stroke.clone()),
             };
+            let bitmap_brush = s.bitmap_brush.as_ref().and_then(|style| {
+                let definition = doc.bitmap_brush(style.brush)?;
+                stroke = style.outline(&path, definition);
+                Some(crate::bitmap_brush::EvaluatedBrush { style: style.clone(), definition: definition.clone() })
+            });
             out.items.push(DisplayItem {
+                bitmap_brush,
                 path,
                 transform,
                 fill,
@@ -804,6 +823,7 @@ fn eval_element(doc: &Document, cx: &Ctx, lc: &LayerCtx<'_>, el: &Element, out: 
                 group,
                 image: None,
                 smooth: true,
+                bitmap_brush: None,
                 warp: None,
             };
             match &t.field {

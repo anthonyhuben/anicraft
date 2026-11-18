@@ -1230,6 +1230,13 @@ fn selection_props(app: &mut App, ui: &mut egui::Ui, e: &anicraft_engine::doc::E
             text_path_rows(app, ui, e, t);
         }
         if let ElementKind::Shape(sh) = &e.kind {
+            if let Some(brush) = sh.bitmap_brush.as_ref().filter(|_| all.len() == 1) {
+                let layer = app.s.selection.iter().find_map(|(layer, id)| (id == e.id).then_some(layer));
+                if let Some(layer) = layer {
+                    bitmap_brush_rows(app, ui, layer, e.id, brush);
+                }
+                return;
+            }
             ui.add_space(4.0);
             let fill = sh.fill.as_ref().map(Paint::primary_color);
             let bitmaps = crate::colour_panel::bitmaps(app);
@@ -3060,12 +3067,66 @@ fn eraser_props(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+fn bitmap_brush_rows(
+    app: &mut App, ui: &mut egui::Ui, layer: anicraft_engine::doc::LayerId, element: anicraft_engine::doc::ElementId,
+    brush: &anicraft_engine::doc::bitmap_brush::BrushStroke,
+) {
+    let key = ui.id().with(("bitmap_brush_anchor", element.0));
+    let last = brush.points.len().saturating_sub(1);
+    let mut index = ui.data(|d| d.get_temp::<usize>(key).unwrap_or(0)).min(last);
+    let mut number = index + 1;
+    row(ui, tr!("Anchor"), |ui| {
+        ui.add(egui::DragValue::new(&mut number).range(1..=last + 1)).named(tr!("Brush anchor"));
+    });
+    if number != index + 1 {
+        index = number - 1;
+        ui.data_mut(|d| d.insert_temp(key, index));
+    }
+    let Some(mut a) = brush.points.get(index).copied() else { return };
+    let mut color = rgba(brush.color);
+    let mut changed = false;
+    row_prose(ui, tr!("Colour"), |ui| {
+        changed |= crate::colour::button_alpha(ui, &mut color).named(tr!("Brush colour")).changed();
+    });
+    for (label, value, range, speed) in [
+        (tr!("Width"), &mut a.width, 0.0..=4000.0, 0.25),
+        (tr!("Opacity"), &mut a.opacity, 0.0..=1.0, 0.01),
+        (tr!("Colour drift"), &mut a.drift, -16.0..=16.0, 0.02),
+    ] {
+        row(ui, label, |ui| {
+            changed |= ui.add(egui::DragValue::new(value).range(range).speed(speed).max_decimals(2)).named(label).changed();
+        });
+    }
+    if changed {
+        live(app, tr_noop!("Edit Bitmap Brush Point"), "stroke.bitmap_channels", json!({
+            "element": element.0, "layer": layer.0, "point": index, "width": a.width, "opacity": a.opacity,
+            "drift": a.drift, "color": crate::colour::to_hex(color, true)
+        }));
+    }
+}
+
 /// The Brush's and the Paint Brush's options (ADR 0033, 0068): the brush, its tip, pressure
 /// and shaping. The tip's shape and the paint mode are the Brush's only (the Paint Brush draws
 /// a round line).
 fn brush_props(app: &mut App, ui: &mut egui::Ui) {
-    crate::brush_panel::props(app, ui, |ui, l, f| row(ui, l, |ui| f(ui)), |ui, l, f| row_prose(ui, l, |ui| f(ui)));
     let paint_brush = app.tool == Tool::PaintBrush;
+    if paint_brush {
+        let mut tip = app.brush_lib.bitmap_tip.filter(|id| app.s.doc.bitmap_brush(*id).is_some());
+        let label = tip.and_then(|id| app.s.doc.bitmap_brush(id)).map_or(tr!("Vector").to_string(), |b| b.name.clone());
+        row_prose(ui, tr!("Tip"), |ui| {
+            egui::ComboBox::from_id_salt("bitmap_brush_tip").selected_text(label).show_ui(ui, |ui| {
+                ui.selectable_value(&mut tip, None, tr!("Vector"));
+                for brush in &app.s.doc.bitmap_brushes {
+                    ui.selectable_value(&mut tip, Some(brush.id), &brush.name);
+                }
+            }).response.set_name(tr!("Brush tip"));
+        });
+        app.brush_lib.bitmap_tip = tip;
+        if ui.button(tr!("Import PNG Tip…")).clicked() {
+            app.invoke("file.import_brush_tip");
+        }
+    }
+    crate::brush_panel::props(app, ui, |ui, l, f| row(ui, l, |ui| f(ui)), |ui, l, f| row_prose(ui, l, |ui| f(ui)));
     use crate::brushtool::{SIZE_MAX, SIZE_MIN};
     use anicraft_engine::cmds_brush::PaintMode;
     use anicraft_engine::geom::brush::TipShape;

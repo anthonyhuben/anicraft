@@ -44,6 +44,7 @@ pub struct FrameClipboard {
     pub symbols: Vec<Arc<Symbol>>,
     /// Sounds the copied keyframes play, so they paste into other documents too.
     pub sounds: Vec<Arc<anicraft_doc::Sound>>,
+    pub bitmap_brushes: Vec<Arc<anicraft_doc::bitmap_brush::BrushDef>>,
 }
 
 impl FrameClipboard {
@@ -90,7 +91,7 @@ fn copy_frames(s: &mut Session, p: &Value) -> Result<Value> {
         let l = s.timeline().layer(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))?;
         layers.push(FrameSlice { name: l.name.clone(), keys: slice(l, frame, count)? });
     }
-    let clip = FrameClipboard { layers, count, symbols: Vec::new(), sounds: Vec::new() };
+    let clip = FrameClipboard { layers, count, symbols: Vec::new(), sounds: Vec::new(), bitmap_brushes: Vec::new() };
     if clip.is_empty() {
         return Err(EngineError::State("no frames there to copy".into()));
     }
@@ -103,7 +104,8 @@ fn copy_frames(s: &mut Session, p: &Value) -> Result<Value> {
             sounds.push(x.clone());
         }
     }
-    s.frame_clipboard = FrameClipboard { symbols, sounds, ..clip };
+    let bitmap_brushes = crate::cmds_bitmap_brush::clipboard_brushes(s, &elements, &symbols);
+    s.frame_clipboard = FrameClipboard { symbols, sounds, bitmap_brushes, ..clip };
     Ok(json!({"copied": count, "layers": n}))
 }
 
@@ -124,7 +126,8 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::State("the timeline would grow past its maximum length".into()));
     }
     let mut row = s.timeline().layers.iter().position(|l| l.id == top).ok_or_else(|| EngineError::State(format!("no layer with id {}", top.0)))?;
-    import_symbols(s, &clip.symbols);
+    let brush_ids = crate::cmds_bitmap_brush::import_clipboard_brushes(s, &clip.bitmap_brushes)?;
+    import_symbols(s, &clip.symbols, &brush_ids);
     for x in &clip.sounds {
         if s.doc.sound(x.id).is_none() {
             s.doc.next_id = s.doc.next_id.max(x.id.0.saturating_add(1));
@@ -154,7 +157,9 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
             for e in &mut k.elements {
                 let old = e.id;
                 let new = *remap.entry(old).or_insert_with(|| ElementId(s.doc.alloc_id()));
-                Arc::make_mut(e).id = new;
+                let el = Arc::make_mut(e);
+                el.id = new;
+                crate::cmds_bitmap_brush::remap_element(el, &brush_ids, 0);
             }
             if let Some(m) = k.motion.as_mut() {
                 m.target = *remap.entry(m.target).or_insert_with(|| ElementId(s.doc.alloc_id()));

@@ -33,6 +33,7 @@ pub mod cmds_raw;
 pub mod cmds_rawsub;
 mod cmds_rawpoints;
 pub mod brush_library;
+mod cmds_bitmap_brush;
 pub mod filter_library;
 pub mod cmds_recent;
 pub mod cmds_desktop;
@@ -170,6 +171,7 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(find::specs());
     v.extend(explorer::specs());
     v.extend(cmds_brush::specs());
+    v.extend(cmds_bitmap_brush::specs());
     v.extend(cmds_filter::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
@@ -231,8 +233,13 @@ pub const MAX_FRAME: u32 = 100_000;
 /// masked-away parts cannot be picked.
 pub(crate) fn pick_index(dl: &DisplayList, p: Vec2, slop: f32, ok: impl Fn(usize, &anicraft_doc::DisplayItem) -> bool) -> Option<usize> {
     for (i, item) in dl.items.iter().enumerate().rev() {
-        let hw = item.stroke.as_ref().map_or(0.0, |s| s.reach() * item.transform.mean_scale());
-        let bounds = item.path.bounds().transformed(&item.transform).inflate(hw + slop);
+        let reach = item.stroke_reach();
+        let hw = reach * item.transform.mean_scale();
+        let bounds = if item.bitmap_brush.is_some() {
+            item.path.bounds().inflate(reach).transformed(&item.transform).inflate(slop)
+        } else {
+            item.path.bounds().transformed(&item.transform).inflate(hw + slop)
+        };
         if !bounds.contains(p) || !ok(i, item) {
             continue;
         }
@@ -240,7 +247,8 @@ pub(crate) fn pick_index(dl: &DisplayList, p: Vec2, slop: f32, ok: impl Fn(usize
             continue;
         }
         let inside = item.fill.is_some() && item.path.contains(p, &item.transform, item.fill_rule);
-        if inside || item.path.distance_to_edge(p, &item.transform) <= hw + slop {
+        let dab = item.bitmap_brush.is_some() && matches!(item.path.cmds.as_slice(), [anicraft_geom::PathCmd::MoveTo(_)]);
+        if inside || dab || item.path.distance_to_edge(p, &item.transform) <= hw + slop {
             return Some(i);
         }
     }
@@ -965,7 +973,7 @@ impl Session {
     pub fn element_bounds(&self, id: ElementId) -> Rect {
         let mut r = Rect::EMPTY;
         for item in self.display_list().items.iter().filter(|i| i.element == id) {
-            let pad = item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach);
+            let pad = item.stroke_reach();
             r = r.union(&item.path.bounds().inflate(pad).transformed(&item.transform));
         }
         r

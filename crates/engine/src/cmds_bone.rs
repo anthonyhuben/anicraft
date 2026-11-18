@@ -988,7 +988,7 @@ pub(crate) fn is_skin_shape(s: &Session, id: ElementId) -> bool {
 /// The binding is carried over to the new outline (moved points keep their weights, new points
 /// blend their neighbours', deleted ones drop theirs) and every pose bends the new outline. One
 /// undo step, like any command.
-pub(crate) fn reshape<T>(s: &mut Session, id: ElementId, edit: impl FnOnce(&mut Shape, Affine) -> Result<T>) -> Result<T> {
+pub(crate) fn reshape<T>(s: &mut Session, id: ElementId, edit: impl Fn(&mut Shape, Affine) -> Result<T>) -> Result<T> {
     let (lid, frame) = (s.layer, s.frame);
     unlocked(s, lid)?;
     let tl = s.timeline();
@@ -1002,9 +1002,11 @@ pub(crate) fn reshape<T>(s: &mut Session, id: ElementId, edit: impl FnOnce(&mut 
     let (_, els) = evaluate_layer_elements(l, frame).ok_or_else(|| EngineError::State(format!("the armature isn't on frame {}", frame + 1)))?;
     let el = els.iter().find(|e| e.id == id).ok_or_else(|| EngineError::State(format!("element {} is not on the active layer at this frame", id.0)))?;
     let ElementKind::Shape(shape) = &el.kind else { return Err(EngineError::State("that isn't a shape".into())) };
+    let original_count = shape.bitmap_brush.as_ref().map(|b| b.points.len());
+    let transform = el.transform;
     let mut shape = shape.clone();
     shape.path = k.rest.clone();
-    let out = edit(&mut shape, el.transform)?;
+    let out = edit(&mut shape, transform)?;
     if *shape.path == *k.rest {
         return Ok(out);
     }
@@ -1012,12 +1014,26 @@ pub(crate) fn reshape<T>(s: &mut Session, id: ElementId, edit: impl FnOnce(&mut 
     if n > MAX_SKIN_POINTS {
         return Err(EngineError::State(format!("a shape with bones has at most {MAX_SKIN_POINTS} points")));
     }
+    let rest = k.rest.clone();
     let skin = weights::reshaped(k, shape.path.clone(), &skin::rest_segments(&arm, id));
     let mut arm = (*arm).clone();
     if let Some(slot) = arm.skin_mut(id) {
         *slot = skin;
     }
     let l = s.layer_mut(Some(lid))?;
+    if original_count != shape.bitmap_brush.as_ref().map(|b| b.points.len()) {
+        // Reapply the anchor edit to each key's channels on the same rest geometry. The
+        // shared skin edit determines the shape; this pass only preserves per-key attributes.
+        for key in &mut l.keyframes {
+            for item in Arc::make_mut(key).elements_mut_where(|element| element == id) {
+                if let ElementKind::Shape(sh) = &mut item.kind && sh.bitmap_brush.is_some() {
+                    let mut copy = Shape { path: rest.clone(), ..sh.clone() };
+                    edit(&mut copy, transform)?;
+                    sh.bitmap_brush = copy.bitmap_brush;
+                }
+            }
+        }
+    }
     l.armature = Some(Arc::new(arm));
     rebake(l);
     Ok(out)

@@ -14,6 +14,7 @@ pub mod skin;
 pub mod weights;
 pub mod warp;
 mod bitmap;
+pub mod bitmap_brush;
 mod color_effect;
 pub mod camera;
 mod filter;
@@ -494,6 +495,9 @@ pub struct Shape {
     /// path is the bent outline; the warp keeps the outline as drawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warp: Option<Arc<warp::Warp>>,
+    /// Bitmap-tip attributes keyed by the anchors of the centerline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitmap_brush: Option<Arc<bitmap_brush::BrushStroke>>,
 }
 
 impl PartialEq for Shape {
@@ -503,6 +507,7 @@ impl PartialEq for Shape {
             && self.stroke == o.stroke
             && self.fill_rule == o.fill_rule
             && self.merge == o.merge
+            && self.bitmap_brush == o.bitmap_brush
             && match (&self.warp, &o.warp) {
                 (Some(a), Some(b)) => arc_eq(a, b),
                 (None, None) => true,
@@ -513,7 +518,7 @@ impl PartialEq for Shape {
 
 impl Shape {
     pub fn filled(path: Path, fill: Paint) -> Shape {
-        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None }
+        Shape { path: Arc::new(path), fill: Some(fill), stroke: None, fill_rule: FillRule::NonZero, merge: false, bitmap_brush: None, warp: None }
     }
     pub fn with_stroke(mut self, color: Rgba, width: f32) -> Shape {
         self.stroke = Some(Stroke::new(color, width));
@@ -1055,7 +1060,9 @@ fn element_bounds(doc: &Document, el: &Element, xf: &Affine, depth: usize) -> Re
     }
     match &el.kind {
         ElementKind::Shape(s) => {
-            let pad = s.stroke.as_ref().map_or(0.0, Stroke::reach);
+            let pad = s.stroke.as_ref().map_or(0.0, Stroke::reach).max(
+                s.bitmap_brush.as_ref().and_then(|s| Some(s.reach(doc.bitmap_brush(s.brush)?))).unwrap_or(0.0),
+            );
             s.path.bounds().inflate(pad).transformed(xf)
         }
         ElementKind::Text(t) => Rect::new(0.0, 0.0, t.box_width.max(0.0), t.box_height.max(0.0)).transformed(xf),
@@ -1846,6 +1853,9 @@ pub struct Document {
     /// Images, shown through [`Paint::Bitmap`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bitmaps: Vec<Arc<Bitmap>>,
+    /// Static tip masks and settings shared by every stroke that references them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bitmap_brushes: Vec<Arc<bitmap_brush::BrushDef>>,
     /// Sounds in the library, placed on keyframes through [`FrameSound`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sounds: Vec<Arc<Sound>>,
@@ -1895,6 +1905,8 @@ struct DocumentFile {
     #[serde(default)]
     bitmaps: Vec<Arc<Bitmap>>,
     #[serde(default)]
+    bitmap_brushes: Vec<Arc<bitmap_brush::BrushDef>>,
+    #[serde(default)]
     sounds: Vec<Arc<Sound>>,
     #[serde(default)]
     library_tree: Arc<LibraryTree>,
@@ -1918,7 +1930,7 @@ impl From<DocumentFile> for Document {
         if let Some(tl) = f.timeline {
             scenes.insert(0, Arc::new(Scene { name: "Scene 1".into(), timeline: tl, guides: Vec::new() }));
         }
-        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, aids: f.aids, swatches: f.swatches, eases: f.eases, next_id: f.next_id }
+        Document { stage: f.stage, scenes, library: f.library, bitmaps: f.bitmaps, bitmap_brushes: f.bitmap_brushes, sounds: f.sounds, library_tree: f.library_tree, document_class: f.document_class, publish: f.publish, aids: f.aids, swatches: f.swatches, eases: f.eases, next_id: f.next_id }
     }
 }
 
@@ -1947,13 +1959,13 @@ static NO_TIMELINE: Timeline = Timeline { layers: Vec::new() };
 
 impl PartialEq for Document {
     fn eq(&self, o: &Document) -> bool {
-        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish) && arc_eq(&self.aids, &o.aids) && arc_eq(&self.swatches, &o.swatches) && arc_eq(&self.eases, &o.eases)
+        self.stage == o.stage && self.next_id == o.next_id && self.document_class == o.document_class && arcs_eq(&self.scenes, &o.scenes) && arcs_eq(&self.library, &o.library) && arcs_eq(&self.bitmaps, &o.bitmaps) && arcs_eq(&self.bitmap_brushes, &o.bitmap_brushes) && arcs_eq(&self.sounds, &o.sounds) && arc_eq(&self.library_tree, &o.library_tree) && arc_eq(&self.publish, &o.publish) && arc_eq(&self.aids, &o.aids) && arc_eq(&self.swatches, &o.swatches) && arc_eq(&self.eases, &o.eases)
     }
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), aids: Arc::default(), swatches: default_swatches(), eases: Arc::default(), next_id: 1 };
+        let mut d = Document { stage: Stage::default(), scenes: vec![Arc::new(Scene::new("Scene 1"))], library: Vec::new(), bitmaps: Vec::new(), bitmap_brushes: Vec::new(), sounds: Vec::new(), library_tree: Arc::default(), document_class: String::new(), publish: Arc::default(), aids: Arc::default(), swatches: default_swatches(), eases: Arc::default(), next_id: 1 };
         let id = LayerId(d.alloc_id());
         d.timeline_mut(0).layers.push(Arc::new(Layer::new(id, "Layer 1")));
         d
@@ -1961,6 +1973,11 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Finds a document-local bitmap-tip brush definition.
+    pub fn bitmap_brush(&self, id: bitmap_brush::BrushId) -> Option<&Arc<bitmap_brush::BrushDef>> {
+        self.bitmap_brushes.iter().find(|b| b.id == id)
+    }
+
     /// A fresh id, unique within this document.
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id.max(1);
@@ -2045,7 +2062,10 @@ impl Document {
         if eases != *self.eases {
             self.eases = Arc::new(eases);
         }
-        let mut max_id = 0u64;
+        let mut brush_ids = std::collections::HashSet::new();
+        self.bitmap_brushes.retain(|b| b.id.0 != 0 && b.valid_tips() && brush_ids.insert(b.id));
+        self.bitmap_brushes.truncate(bitmap_brush::MAX_BRUSHES);
+        let mut max_id = self.bitmap_brushes.iter().map(|b| b.id.0).max().unwrap_or(0);
         let scan = |l: &Layer, max_id: &mut u64| {
             *max_id = (*max_id).max(l.id.0);
             for b in l.armature.iter().flat_map(|a| &a.bones) {

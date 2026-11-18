@@ -228,7 +228,7 @@ impl Session {
     pub fn element_bounds_on(&self, layer: LayerId, id: ElementId) -> Rect {
         let mut r = Rect::EMPTY;
         for item in self.display_list().items.iter().filter(|i| i.element == id && i.layer == layer) {
-            let pad = item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach);
+            let pad = item.stroke_reach();
             r = r.union(&item.path.bounds().inflate(pad).transformed(&item.transform));
         }
         r
@@ -239,7 +239,7 @@ impl Session {
         let sel: HashSet<(LayerId, ElementId)> = self.selection.iter().collect();
         let mut r = Rect::EMPTY;
         for item in self.display_list().items.iter().filter(|i| sel.contains(&(i.layer, i.element))) {
-            let pad = item.stroke.as_ref().map_or(0.0, anicraft_doc::Stroke::reach);
+            let pad = item.stroke_reach();
             r = r.union(&item.path.bounds().inflate(pad).transformed(&item.transform));
         }
         r

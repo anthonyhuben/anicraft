@@ -32,6 +32,7 @@ pub struct BrushLibraryView {
     pub open: bool,
     /// The brush last chosen for the Brush and for the Paint Brush, by name.
     pub chosen: [Option<String>; 2],
+    pub bitmap_tip: Option<anicraft_engine::doc::bitmap_brush::BrushId>,
     /// The name typed to save the brush in hand under.
     pub save_name: String,
     /// A brush of yours being renamed: its name, and the new one as typed.
@@ -76,7 +77,10 @@ pub fn choose(app: &mut App, p: &BrushPreset) {
         app.tool = tool;
     }
     match tool {
-        Tool::PaintBrush => app.paint_brush.apply(p),
+        Tool::PaintBrush => {
+            app.paint_brush.apply(p);
+            app.brush_lib.bitmap_tip = None;
+        }
         _ => app.brush.apply(p),
     }
     if let Some(c) = app.brush_lib.chosen.get_mut(slot(tool)) {
@@ -266,57 +270,67 @@ fn panel(app: &mut App, ui: &mut egui::Ui) {
 pub fn props(app: &mut App, ui: &mut egui::Ui, row: impl Fn(&mut egui::Ui, &str, &mut dyn FnMut(&mut egui::Ui)), row_prose: impl Fn(&mut egui::Ui, &str, &mut dyn FnMut(&mut egui::Ui))) {
     let tool = target(app);
     let as_stroke = tool == Tool::PaintBrush;
-    let current = current_name(app, tool);
-    let items = all(app);
-    let mut picked: Option<BrushPreset> = None;
-    let mut library = false;
-    row_prose(ui, tr!("Brush"), &mut |ui| {
-        let shown = current.as_deref().map_or_else(|| tr!("Custom").to_string(), |c| items.iter().find(|(_, p, _)| p.name.eq_ignore_ascii_case(c)).map_or(c.to_string(), |(s, _, _)| s.clone()));
-        egui::ComboBox::from_id_salt(("brush_preset", slot(tool)))
-            .width(130.0)
-            .selected_text(shown)
-            .show_ui(ui, |ui| {
-                for (s, p, key) in &items {
-                    let on = current.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(&p.name));
-                    let r = ui.selectable_label(on, s.as_str());
-                    let r = match key {
-                        Some(k) => r.on_hover_text(crate::i18n::t(builtin_hint(k))),
-                        None => r,
-                    };
-                    if r.clicked() {
-                        picked = Some(p.clone());
+    let bitmap_tip = app.brush_lib.bitmap_tip.filter(|_| as_stroke).and_then(|id| app.s.doc.bitmap_brush(id)).map(|b| b.pressure_to_opacity);
+    if bitmap_tip.is_none() {
+        let current = current_name(app, tool);
+        let items = all(app);
+        let mut picked: Option<BrushPreset> = None;
+        let mut library = false;
+        row_prose(ui, tr!("Brush"), &mut |ui| {
+            let shown = current.as_deref().map_or_else(|| tr!("Custom").to_string(), |c| items.iter().find(|(_, p, _)| p.name.eq_ignore_ascii_case(c)).map_or(c.to_string(), |(s, _, _)| s.clone()));
+            egui::ComboBox::from_id_salt(("brush_preset", slot(tool)))
+                .width(130.0)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (s, p, key) in &items {
+                        let on = current.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(&p.name));
+                        let r = ui.selectable_label(on, s.as_str());
+                        let r = match key {
+                            Some(k) => r.on_hover_text(crate::i18n::t(builtin_hint(k))),
+                            None => r,
+                        };
+                        if r.clicked() {
+                            picked = Some(p.clone());
+                        }
                     }
-                }
-            })
-            .response
-            .set_name(tr!("Brush preset"));
-        if ui.button(tr!("Library…")).on_hover_text(tr!("Window › Brush Library: every brush with a preview, and your own")).clicked() {
-            library = true;
-        }
-    });
-    if let Some(p) = picked {
-        choose(app, &p);
-    }
-    if library {
-        toggle(app);
-    }
-    // What a stroke with these settings looks like (the renderer's own picture).
-    let o = *crate::brushtool::options(app);
-    let size = vec2((ui.available_width() - crate::theme::FORM_LABEL_DOCK).clamp(80.0, 200.0), 36.0);
-    if let Some(t) = preview(app, ui.ctx(), &o.preset(""), as_stroke, size) {
-        // Under the fields, past the labels' column (a picture, not a control).
-        ui.horizontal(|ui| {
-            ui.add_space(crate::theme::FORM_LABEL_DOCK + ui.spacing().item_spacing.x);
-            let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-            ui.painter().rect_filled(r, T.rc(), T.field);
-            ui.painter().image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+                })
+                .response
+                .set_name(tr!("Brush preset"));
+            if ui.button(tr!("Library…")).on_hover_text(tr!("Window › Brush Library: every brush with a preview, and your own")).clicked() {
+                library = true;
+            }
         });
+        if let Some(p) = picked {
+            choose(app, &p);
+        }
+        if library {
+            toggle(app);
+        }
+        // What a stroke with these settings looks like (the renderer's own picture).
+        let o = *crate::brushtool::options(app);
+        let size = vec2((ui.available_width() - crate::theme::FORM_LABEL_DOCK).clamp(80.0, 200.0), 36.0);
+        if let Some(t) = preview(app, ui.ctx(), &o.preset(""), as_stroke, size) {
+            // Under the fields, past the labels' column (a picture, not a control).
+            ui.horizontal(|ui| {
+                ui.add_space(crate::theme::FORM_LABEL_DOCK + ui.spacing().item_spacing.x);
+                let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+                ui.painter().rect_filled(r, T.rc(), T.field);
+                ui.painter().image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+            });
+        }
     }
-    let tilt_seen = app.pen_tilt_seen;
+    let tilt_seen = app.pen_tilt_seen && bitmap_tip.is_none();
     let o = crate::brushtool::options_mut(app);
     row_prose(ui, tr!("Pressure"), &mut |ui| {
         crate::theme::checkbox(ui, &mut o.pressure_size, tr!("Size")).on_hover_text(tr!("Pen pressure varies the size, from 10 % to the full size"));
-        crate::theme::checkbox(ui, &mut o.pressure_opacity, tr!("Opacity")).on_hover_text(tr!("Pen pressure sets the stroke's opacity (its average over the stroke)"));
+        if bitmap_tip != Some(false) {
+            let hint = if bitmap_tip.is_some() {
+                tr!("Pen pressure varies opacity along the stroke")
+            } else {
+                tr!("Pen pressure sets the stroke's opacity (its average over the stroke)")
+            };
+            crate::theme::checkbox(ui, &mut o.pressure_opacity, tr!("Opacity")).on_hover_text(hint);
+        }
     });
     row_prose(ui, tr!("Curve"), &mut |ui| {
         ui.add_enabled_ui(o.pressure_size || o.pressure_opacity, |ui| {

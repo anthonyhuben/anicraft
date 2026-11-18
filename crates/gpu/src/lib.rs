@@ -27,10 +27,13 @@ mod gate;
 pub mod gpu_binning;
 pub mod images;
 mod layers;
+mod brush;
 
 pub use gate::{CLOSE_WAIT, SUBMIT_WAIT, SubmitGate};
 
 use anicraft_doc::DisplayList;
+use anicraft_render::brush::{BrushLayer, StampRenderer};
+use anicraft_render::SurfaceLayer;
 use anicraft_render::{MAX_PIXELS, NeedsFull, Pixmap, RenderStats, View, paint::premultiply, prepare_scene};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
@@ -186,6 +189,7 @@ pub struct GpuRenderer {
     texture_pipeline: wgpu::ComputePipeline,
     texture_layout: wgpu::BindGroupLayout,
     filters: layers::FilterPipelines,
+    brush: brush::Pipelines,
     bins: gpu_binning::Pipelines,
     /// [`Binning`], as its code.
     binning: AtomicU8,
@@ -258,6 +262,7 @@ pub const MAX_LAYER_PIXELS: u64 = 1 << 23;
 struct Job {
     binned: binning::Binned,
     layers: Vec<LayerJob>,
+    brushes: Vec<(u32, BrushLayer)>,
 }
 
 struct LayerJob {
@@ -282,6 +287,11 @@ impl Job {
         c.work += self.binned.work;
         c.entries += self.binned.entries;
         c.pieces += self.binned.pieces;
+        for (_, brush) in &self.brushes {
+            let n = brush.bounds.width() as u64 * brush.bounds.height() as u64;
+            c.layer_pixels += n;
+            c.work += n.div_ceil(64) + brush.instances.len() as u64;
+        }
         for l in &self.layers {
             let n = u64::from(l.view.width) * u64::from(l.view.height);
             c.layer_pixels += n;
@@ -403,6 +413,7 @@ impl GpuRenderer {
         let storage_texture = wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 };
         let (texture_pipeline, texture_layout) = make("anicraft-fine-texture", entry(5, storage_texture), "main_texture");
         let filters = layers::FilterPipelines::new(&device);
+        let brush = brush::Pipelines::new(&device);
         let bins = gpu_binning::Pipelines::new(&device);
         let blank = device
             .create_texture(&wgpu::TextureDescriptor {
@@ -429,6 +440,7 @@ impl GpuRenderer {
             texture_pipeline,
             texture_layout,
             filters,
+            brush,
             bins,
             binning: AtomicU8::new(Binning::from_env().code()),
             no_gpu_binning: Mutex::new(None),
@@ -473,6 +485,7 @@ impl GpuRenderer {
             group: None,
             image: None,
             smooth: true,
+            bitmap_brush: None,
             warp: None,
         };
         let solid = |x: f32, c: Rgba| item(Path::rect(x, 2.0, 8.0, 16.0), Paint::Solid(c));
@@ -699,7 +712,15 @@ impl GpuRenderer {
         };
         let binned = binning::bin_with(&scene, view.width, view.height, lim.as_ref()).map_err(GpuError::NeedsFull)?;
         *bin_ms += ms(t);
-        let shown: Vec<(u32, anicraft_render::FilterLayer)> = std::mem::take(&mut scene.layers).into_iter().zip(&binned.layer_at).filter_map(|(l, at)| Some(((*at)?, l))).collect();
+        let mut shown = Vec::new();
+        let mut brushes = Vec::new();
+        for (source, at) in std::mem::take(&mut scene.layers).into_iter().zip(&binned.layer_at) {
+            let Some(at) = *at else { continue };
+            match source {
+                SurfaceLayer::Filtered(layer) => shown.push((at, layer)),
+                SurfaceLayer::Brush(layer) => brushes.push((at, layer)),
+            }
+        }
         // Free the prepared polygons on the pool, off this frame's path (as the oracle does).
         anicraft_render::drop_in_background(scene);
         if !shown.is_empty() && depth >= MAX_FILTER_DEPTH {
@@ -719,7 +740,7 @@ impl GpuRenderer {
             })
             .collect();
         let layers = planned.into_iter().collect::<Result<Vec<_>, _>>()?;
-        Ok((Job { binned, layers }, stats))
+        Ok((Job { binned, layers, brushes }, stats))
     }
 
     /// The largest buffer the device binds.
@@ -736,6 +757,12 @@ impl GpuRenderer {
         for (what, n) in sizes {
             if n > cap {
                 return Err(GpuError::TooLarge(format!("{what} need {} MB, more than this GPU binds ({} MB)", n >> 20, cap >> 20)));
+            }
+        }
+        for (_, brush) in &job.brushes {
+            let cap = self.limits.max_texture_dimension_2d as usize;
+            if brush.bounds.width() > cap || brush.bounds.height() > cap || brush.atlas.tips.len() > self.limits.max_texture_array_layers as usize {
+                return Err(GpuError::TooLarge("a bitmap brush exceeds this GPU's texture limits".into()));
             }
         }
         for l in &job.layers {
@@ -766,6 +793,10 @@ impl GpuRenderer {
             }
         }
         pbuf.unmap();
+        for (at, layer) in &job.brushes {
+            let mut recorder = brush::Recorder { device: &self.device, queue: &self.queue, pipelines: &self.brush, encoder: enc };
+            let _ = recorder.draw(layer, &mut brush::Target { buffer: &pbuf, at: *at });
+        }
         for l in &job.layers {
             let (w, h) = (l.view.width, l.view.height);
             let n = u64::from(w) * u64::from(h);

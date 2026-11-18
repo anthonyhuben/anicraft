@@ -384,7 +384,8 @@ fn copy_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let all: Vec<Element> = layers.iter().flat_map(|c| c.elements.iter().cloned()).collect();
     let symbols = collect_symbols(s, &all);
     let (n, keyframes) = (all.len(), layers.len());
-    s.clipboard = Clipboard { layers, symbols };
+    let bitmap_brushes = crate::cmds_bitmap_brush::clipboard_brushes(s, &all, &symbols);
+    s.clipboard = Clipboard { layers, symbols, bitmap_brushes };
     Ok(json!({"copied": n, "keyframes": keyframes}))
 }
 
@@ -446,11 +447,16 @@ fn paste_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         let why = if tl.layer(active).is_some_and(|_| shown_keyframes(tl, active, first, last).is_empty()) { "the layer has no keyframe Edit Multiple Frames can paste onto between the markers (it must be visible, unlocked and hold artwork)" } else { "none of the copied keyframes is between the markers" };
         return Err(EngineError::State(why.into()));
     }
-    import_symbols(s, &clip.symbols);
+    let ids = crate::cmds_bitmap_brush::import_clipboard_brushes(s, &clip.bitmap_brushes)?;
+    import_symbols(s, &clip.symbols, &ids);
     let mut items = Vec::new();
     let mut keyframes: HashSet<(LayerId, u32)> = HashSet::new();
     for (layer, start, c) in plan {
-        let (fresh, _) = at_keyframe(s, layer, start, |s| crate::cmds_modify::paste_layer(s, &c.elements, Vec2::ZERO))?;
+        let mut elements = c.elements.clone();
+        for el in &mut elements {
+            crate::cmds_bitmap_brush::remap_element(el, &ids, 0);
+        }
+        let (fresh, _) = at_keyframe(s, layer, start, |s| crate::cmds_modify::paste_layer(s, &elements, Vec2::ZERO))?;
         keyframes.insert((layer, start));
         items.extend(fresh.into_iter().map(|element| FrameItem { layer, frame: start, element }));
     }

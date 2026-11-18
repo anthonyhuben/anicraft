@@ -119,7 +119,7 @@ fn draw_freehand(s: &mut Session, p: &Value) -> Result<Value> {
 /// Runs `edit` on shape element `id` (param `id`) in the editable keyframe (copy-on-write), with
 /// its transform. The shape of a shape armature is reshaped at rest instead, keeping its binding
 /// (ADR 0090).
-fn edit_shape<T>(s: &mut Session, p: &Value, edit: impl FnOnce(&mut Shape, Affine) -> Result<T>) -> Result<T> {
+fn edit_shape<T>(s: &mut Session, p: &Value, edit: impl Fn(&mut Shape, Affine) -> Result<T>) -> Result<T> {
     let id = ElementId(opt_u64(p, "id")?.ok_or_else(|| EngineError::Param("param 'id' is required".into()))?);
     if !s.visible_elements().iter().any(|e| e.id == id) {
         return Err(EngineError::State(format!("element {} is not on the active layer at this frame", id.0)));
@@ -165,7 +165,7 @@ fn move_points(s: &mut Session, p: &Value) -> Result<Value> {
         let path = Arc::make_mut(&mut sh.path);
         // Anchors bring their handles and their twin at a closed start; each point moves once.
         let mut set = BTreeSet::new();
-        for (cmd, slot) in wanted {
+        for &(cmd, slot) in &wanted {
             if path.point(cmd, slot).is_none() {
                 return Err(EngineError::Param(format!("no point ({cmd}, {slot}) on this path")));
             }
@@ -222,8 +222,18 @@ fn add_point(s: &mut Session, p: &Value) -> Result<Value> {
         if dist > slop {
             return Err(EngineError::State("no segment there".into()));
         }
+        if sh.bitmap_brush.as_ref().is_some_and(|b| b.points.len() >= anicraft_doc::bitmap_brush::MAX_POINTS) {
+            return Err(EngineError::State("the bitmap brush stroke has reached its anchor limit".into()));
+        }
         if path.cmds.len() >= MAX_CMDS || !path.split_segment(cmd, t) {
             return Err(EngineError::State("cannot add a point there".into()));
+        }
+        if let Some(brush) = &mut sh.bitmap_brush {
+            let brush = Arc::make_mut(brush);
+            if cmd <= brush.points.len() {
+                let channels = brush.sample_channels(cmd, t, cmd == brush.points.len());
+                brush.points.insert(cmd, channels);
+            }
         }
         Ok(json!({"cmd": cmd}))
     })
@@ -238,6 +248,12 @@ fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
         let mut removed = 0;
         for cmd in order.into_iter().rev() {
             if path.remove_anchor(cmd) {
+                if let Some(brush) = &mut sh.bitmap_brush {
+                    let brush = Arc::make_mut(brush);
+                    if cmd < brush.points.len() {
+                        brush.points.remove(cmd);
+                    }
+                }
                 removed += 1;
             }
         }

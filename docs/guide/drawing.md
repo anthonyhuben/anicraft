@@ -159,6 +159,14 @@ stipple. Both are still ordinary vector shapes: they merge, erase, scale and exp
 other paint, and the same stroke always comes out the same. The **Charcoal** and **Spatter**
 brushes in the Brush menu use them.
 
+**Bitmap tips.** Select the **Paint Brush** and choose **Import PNG Tip…** in Properties.
+Choose a grayscale PNG up to 256 × 256 pixels. White deposits colour and black is transparent.
+Choose the imported tip in the **Tip** menu, then paint in the stroke colour. Subselection edits
+the Bézier anchors and handles. Select the stroke to adjust its colour, width, opacity and colour
+drift in Properties. To animate the channels, change them on a second matching keyframe and
+create a classic tween. **View › Show Bitmap Brush Texture** switches between the texture and a
+plain vector preview in the editor. Test Movie and raster exports always show the texture.
+
 **Tilt.** Brushes can follow a pen's tilt: the tip turns with the way the pen leans (so a flat
 nib follows your hand), and paints wider as it leans, up to twice as wide lying flat. A mouse
 is never affected. Windows, macOS and Linux don't pass a pen's tilt on to AniCraft yet, so the
@@ -541,6 +549,6 @@ without snapping. Rulers, the grid and guides never show in Test Movie or in exp
 
 Not in AniCraft yet: gradient and bitmap strokes; swatch folders, bitmap swatches and the
 swatches inside Animate files; moving the Envelope's handles from the keyboard; reading a
-pen's tilt on Windows, macOS and Linux (the brushes' tilt settings are ready for it); bitmap
-and art brushes; and Animate's ragged, stipple and hatched line styles (drawn
+pen's tilt on Windows, macOS and Linux (the brushes' tilt settings are ready for it); art
+and pattern brushes; and Animate's ragged, stipple and hatched line styles (drawn
 solid when you open an Animate file).

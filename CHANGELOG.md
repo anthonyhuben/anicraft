@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **Bitmap-tip Paint Brush** (ADR 0106, M7). Import a grayscale tip PNG and paint
+  textured Bézier strokes. Keyframe width, opacity and colour drift per anchor.
+  Toggle brush texture on the editing stage. Test Movie and raster exports render
+  the full brush at output resolution.
+
 * **Fixed: start-up, graphics and opening Flash files, from user reports** (ADR 0105, M8).
   * Fixed: most `.fla` files saved by Flash CS5 to Animate were refused with "the archive is
     damaged: the central directory is outside the archive" (#356, #385). Flash writes the
